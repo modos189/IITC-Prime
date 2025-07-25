@@ -35,4 +35,4 @@ Clean build:
 ```bash
 npm run clean
 ```
-up1
+up2
