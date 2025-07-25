@@ -1,0 +1,40 @@
+name: 'Setup Development Environment'
+description: 'Setup Node.js, Java, Android SDK, Python and NativeScript CLI'
+
+inputs:
+  node-version:
+    description: 'Node.js version to use'
+    required: false
+    default: '18'
+  java-version:
+    description: 'Java version to use'
+    required: false
+    default: '17'
+
+runs:
+  using: 'composite'
+  steps:
+    - uses: actions/setup-java@v4
+      with:
+        distribution: 'temurin'
+        java-version: ${{ inputs.java-version }}
+
+    - uses: actions/setup-node@v4
+      with:
+        node-version: ${{ inputs.node-version }}
+
+    - name: Setup Android SDK
+      uses: android-actions/setup-android@v3
+
+    - name: Install Python dependencies
+      shell: bash
+      run: |
+        python3 -m venv venv
+        source venv/bin/activate
+        python3 -m pip install six
+
+    - name: Install NativeScript CLI
+      shell: bash
+      run: |
+        npm install -g nativescript
+        ns doctor android
