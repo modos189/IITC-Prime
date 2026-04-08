@@ -77,5 +77,4 @@ app.use(RipplePlugin);
 app.use(BottomSheetPlugin);
 app.use(PersistentBottomSheetPlugin);
 app.use(SwipeMenuPlugin);
-
 app.start();
