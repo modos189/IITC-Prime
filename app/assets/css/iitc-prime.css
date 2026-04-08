@@ -1,11 +1,14 @@
-/* Copyright (C) 2021-2025 IITC-CE - GPL-3.0 with Store Exception - see LICENSE and COPYING.STORE */
+/* Copyright (C) 2021-2026 IITC-CE - GPL-3.0 with Store Exception - see LICENSE and COPYING.STORE */
 
-html, body {
-    min-height: initial;
-    min-width: initial;
+html,
+body {
+  min-height: initial;
+  min-width: initial;
 }
 
-#chatinput {
-    height: 40px;
-    padding-bottom: 10px;
+/* Prevent iOS WKWebView auto-zoom on input focus (triggered when font-size < 16px) */
+input,
+textarea,
+select {
+  font-size: max(16px, 1em) !important;
 }

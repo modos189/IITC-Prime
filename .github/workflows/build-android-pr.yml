@@ -1,0 +1,30 @@
+name: Build Android PR
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test_build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup environment
+        uses: ./.github/actions/setup-android-env
+
+      - name: Setup cache
+        uses: ./.github/actions/setup-cache
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Make test build
+        run: npm run build:android:debug
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-app-debug
+          path: platforms/android/app/build/outputs/apk/debug/app-debug.apk

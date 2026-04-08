@@ -1,68 +1,83 @@
-// Copyright (C) 2021-2025 IITC-CE - GPL-3.0 with Store Exception - see LICENSE and COPYING.STORE
+// Copyright (C) 2021-2026 IITC-CE - GPL-3.0 with Store Exception - see LICENSE and COPYING.STORE
 
 <template>
   <Frame>
-    <Page actionBarHidden="true">
-    <RootLayout ref="rootLayout" height="100%" width="100%" @layoutChanged="onRootLayoutChanged">
-      <AbsoluteLayout class="page">
-
-        <!-- Main content with WebView (hidden when debug is active) -->
-        <GridLayout
-          rows="*, auto"
-          columns="*"
-          class="main-content"
+    <Page
+      actionBarHidden="true"
+      androidOverflowEdge="dont-apply"
+      @androidOverflowInset="onAndroidInset"
+    >
+      <RootLayout ref="rootLayout" height="100%" width="100%" @layoutChanged="onRootLayoutChanged">
+        <BottomSheetPanel
           v-show="!isDebugActive"
+          :isVisible="sliding.isVisible"
+          :gestureEnabled="!isDebugActive"
+          :panelWidth="layout.panelWidth"
+          :safeAreaLeftInset="safeAreaLeftInset"
+          :safeAreaRightInset="safeAreaRightInset"
+          :navBarHeight="navBarHeight"
+          :listBottomPadding="mapStateBarHeight + navBarHeight"
+          @bottomSheetReady="handleBottomSheetReady"
         >
-          <AppWebView
-            ref="appWebView"
-            row="0"
-            col="0"
-            @show-popup="handlePopup"
-            @console-log="onConsoleLog"
-          />
-          <label
-            row="1"
-            col="0"
-            v-show="sliding.isVisible"
-            :height="layout.bottomPadding"
-          />
-        </GridLayout>
+          <AbsoluteLayout class="page">
+            <!-- Main content with WebView (hidden when debug is active) -->
+            <GridLayout rows="*, auto" columns="*" class="main-content">
+              <AppWebView
+                ref="appWebView"
+                row="0"
+                col="0"
+                @show-popup="handlePopup"
+                @console-log="onConsoleLog"
+              />
+              <label row="1" col="0" :height="contentBottomPadding" />
+            </GridLayout>
 
-        <DebugConsole
-          v-show="isDebugActive"
-          class="debug-console"
-          :is-visible="isDebugActive"
-          :is-keyboard-open="isKeyboardOpen"
-          @execute-command="executeDebugCommand"
-        />
+            <ProgressBar class="progress-bar" />
+          </AbsoluteLayout>
+        </BottomSheetPanel>
 
-        <ProgressBar class="progress-bar" />
-        <SlidingPanel
+        <PopupWebView v-if="popup.isVisible" v-bind="popup.props" @close="handlePopupClose" />
+
+        <!-- MapStateBar overlay - positioned at bottom, above BottomSheet -->
+        <MapStateBar
           v-show="sliding.isVisible && !isDebugActive"
-          class="sliding-panel"
-          :is-visible="sliding.isVisible && !isDebugActive"
+          :bottomSheetRef="bottomSheetInstance"
+          verticalAlignment="bottom"
+          horizontalAlignment="left"
+          :height="mapStateBarHeight + navBarHeight"
+          :navBarHeight="navBarHeight"
+          :panelWidth="layout.panelWidth"
+          :safeAreaLeftInset="safeAreaLeftInset"
+          class="map-state-bar-overlay"
         />
 
-        <PopupWebView
-          v-if="popup.isVisible"
-          v-bind="popup.props"
-          @close="handlePopupClose"
-        />
-      </AbsoluteLayout>
-    </RootLayout>
+        <!-- Debug Console -->
+        <AbsoluteLayout v-show="isDebugActive" class="page">
+          <DebugConsole
+            class="debug-console"
+            :is-visible="isDebugActive"
+            :is-keyboard-open="isKeyboardOpen"
+            :keyboard-height="keyboardHeight"
+            @execute-command="executeDebugCommand"
+          />
+        </AbsoluteLayout>
+      </RootLayout>
     </Page>
   </Frame>
 </template>
 
 <script>
-import { AndroidApplication, Application } from "@nativescript/core";
+import { AndroidApplication, Application, Frame, isAndroid, isIOS } from '@nativescript/core';
 import { keyboardOpening } from '@bezlepkin/nativescript-keyboard-opening';
 import { layoutService } from '~/utils/layout-service';
-import UserLocation from "@/utils/user-location";
+import UserLocation from '@/utils/user-location';
+import { handleDeepLink } from '@/utils/deep-links';
+import { parseAndroidInsets } from '@/utils/platform';
 
 import AppWebView from './AppWebView';
 import ProgressBar from './ProgressBar';
-import SlidingPanel from './SlidingPanel/SlidingPanel.vue';
+import BottomSheetPanel from './BottomPanel/BottomSheetPanel.vue';
+import MapStateBar from './BottomPanel/MapStateBar/MapStateBar.vue';
 import PopupWebView from './PopupWebView.vue';
 import DebugConsole from './DebugConsole';
 
@@ -72,9 +87,10 @@ export default {
   components: {
     AppWebView,
     ProgressBar,
-    SlidingPanel,
+    BottomSheetPanel,
+    MapStateBar,
     PopupWebView,
-    DebugConsole
+    DebugConsole,
   },
 
   data() {
@@ -83,30 +99,54 @@ export default {
       layout: {
         bottomPadding: 0,
         panelWidth: 0,
-        contentHeight: 0
+        contentHeight: 0,
       },
       popup: {
         isVisible: false,
         props: {
           url: null,
-          transport: null
-        }
+          transportId: null,
+        },
       },
       sliding: {
         isVisible: true,
       },
+      bottomSheetInstance: null,
+      mapStateBarHeight: 46,
       unsubscribeStore: null,
       removeLayoutListener: null,
       keyboard: null,
       isKeyboardOpen: false,
+      keyboardHeight: 0,
       userLocation: null,
-    }
+      navBarHeight: 0,
+    };
   },
 
   computed: {
     isDebugActive() {
       return this.$store.state.ui.isDebugActive;
-    }
+    },
+    safeAreaLeftInset() {
+      return this.$store.state.ui.screenSafeArea.left;
+    },
+    safeAreaRightInset() {
+      return this.$store.state.ui.screenSafeArea.right;
+    },
+
+    /**
+     * Bottom spacer height for AppWebView content area.
+     * On Android with keyboard open: equals keyboardHeight to shrink WebView viewport,
+     * so the browser engine scrolls focused inputs above the keyboard (adjustResize emulation).
+     * Otherwise: equals bottomPadding to reserve space for the bottom panel.
+     * On iOS WKWebView handles keyboard avoidance natively — no special handling needed.
+     */
+    contentBottomPadding() {
+      if (isAndroid && this.isKeyboardOpen) {
+        return this.keyboardHeight;
+      }
+      return this.layout.bottomPadding + this.navBarHeight;
+    },
   },
 
   methods: {
@@ -116,12 +156,16 @@ export default {
      */
     onRootLayoutChanged(args) {
       if (!this.$refs.rootLayout || !this.$refs.rootLayout.nativeView) {
-        console.error("RootLayout reference not available");
+        console.error('RootLayout reference not available');
         return;
       }
 
       // Measure the real available dimensions with our layout service
       layoutService.measureLayout(this.$refs.rootLayout.nativeView);
+
+      if (isIOS) {
+        this.readIOSSafeAreaInsets();
+      }
     },
 
     /**
@@ -134,7 +178,7 @@ export default {
       this.layout = {
         bottomPadding: dimensions.bottomPadding,
         panelWidth: dimensions.panelWidth,
-        contentHeight: dimensions.contentHeight
+        contentHeight: dimensions.contentHeight,
       };
 
       // Update Vuex store
@@ -145,24 +189,33 @@ export default {
      * Update layout related values in the Vuex store
      */
     async updateStoreLayout(dimensions) {
-      await Promise.all([
-        this.$store.dispatch('ui/setSlidingPanelWidth', dimensions.panelWidth),
-        this.$store.dispatch('ui/setScreenHeight', dimensions.contentHeight)
-      ]);
+      await this.$store.dispatch('ui/setLayoutDimensions', {
+        contentHeight: dimensions.contentHeight,
+        panelWidth: dimensions.panelWidth,
+        availableWidth: dimensions.availableWidth,
+      });
     },
 
-    handlePopup({ url, transport }) {
+    handlePopup(data) {
       this.popup = {
         isVisible: true,
-        props: { url, transport }
+        props: data,
       };
     },
 
     handlePopupClose() {
       this.popup = {
         isVisible: false,
-        props: { url: null, transport: null }
+        props: { url: null, transportId: null },
       };
+    },
+
+    /**
+     * Handle BottomSheet ready event
+     * Store reference to native instance for MapStateBar
+     */
+    handleBottomSheetReady(bottomSheet) {
+      this.bottomSheetInstance = bottomSheet;
     },
 
     // Handle console logs from AppWebView
@@ -170,12 +223,46 @@ export default {
       this.$store.dispatch('debug/addLog', logData);
     },
 
+    readIOSSafeAreaInsets() {
+      const rootView = this.$refs.rootLayout?.nativeView;
+      if (!rootView?.ios) return;
+
+      const insets = rootView.ios.safeAreaInsets;
+      if (!insets) return;
+
+      this.$store.dispatch('ui/setScreenSafeArea', {
+        top: insets.top,
+        bottom: insets.bottom,
+        left: insets.left,
+        right: insets.right,
+      });
+    },
+
+    onAndroidInset(args) {
+      if (!isAndroid || !args?.inset) return;
+      const raw = args.inset;
+      const { bottom, left, right } = parseAndroidInsets(raw);
+
+      // Only update navBarHeight when keyboard is not open (imeBottom > 0 means keyboard is showing).
+      if (raw.imeBottom === 0) {
+        this.navBarHeight = bottom;
+      }
+
+      this.$store.dispatch('ui/setScreenSafeArea', { bottom, left, right });
+
+      args.inset.topConsumed = true;
+      args.inset.bottomConsumed = true;
+      args.inset.leftConsumed = true;
+      args.inset.rightConsumed = true;
+      args.inset.imeBottomConsumed = true;
+    },
+
     // Execute debug command from Debug Console
     executeDebugCommand(command) {
       if (this.$refs.appWebView) {
         this.$refs.appWebView.executeDebugCommand(command);
       } else {
-        console.error("AppWebView reference not found");
+        console.error('AppWebView reference not found');
       }
     },
 
@@ -186,7 +273,7 @@ export default {
     setupAndroidBackHandler() {
       if (!Application.android) return;
 
-      Application.android.on(AndroidApplication.activityBackPressedEvent, (args) => {
+      Application.android.on(AndroidApplication.activityBackPressedEvent, args => {
         // If debug is active, exit debug mode instead of navigating back
         if (this.isDebugActive) {
           this.$store.dispatch('ui/toggleDebugMode');
@@ -199,14 +286,24 @@ export default {
       });
     },
 
+    isMainPageActive() {
+      const frame = Frame.topmost();
+      return !frame?.backStack?.length;
+    },
+
     onKeyboardOpened(args) {
+      if (!this.isMainPageActive()) return;
       this.sliding.isVisible = false;
       this.isKeyboardOpen = true;
+      this.keyboardHeight = args.data?.height || 0;
+      this.$store.dispatch('ui/setKeyboardOpen', true);
     },
     onKeyboardClosed() {
       this.sliding.isVisible = true;
       this.isKeyboardOpen = false;
-    }
+      this.keyboardHeight = 0;
+      this.$store.dispatch('ui/setKeyboardOpen', false);
+    },
   },
 
   async created() {
@@ -223,7 +320,7 @@ export default {
     this.layout = {
       bottomPadding: layoutService.dimensions.bottomPadding,
       panelWidth: layoutService.dimensions.panelWidth,
-      contentHeight: layoutService.dimensions.contentHeight
+      contentHeight: layoutService.dimensions.contentHeight,
     };
 
     // Update store with initial values
@@ -232,23 +329,29 @@ export default {
     this.userLocation = new UserLocation();
 
     // Subscribe to layout changes
-    this.removeLayoutListener = layoutService.addLayoutChangeListener(this.handleLayoutChanged.bind(this));
+    this.removeLayoutListener = layoutService.addLayoutChangeListener(
+      this.handleLayoutChanged.bind(this)
+    );
 
-    this.keyboard = keyboardOpening();
+    setTimeout(() => {
+      this.keyboard = keyboardOpening();
+      this.keyboard.on('opened', this.onKeyboardOpened);
+      this.keyboard.on('closed', this.onKeyboardClosed);
+    }, 1000);
 
-    this.keyboard.on('opened', this.onKeyboardOpened);
-    this.keyboard.on('closed', this.onKeyboardClosed);
+    // Initialize deep link handling
+    handleDeepLink();
 
     this.unsubscribeStore = this.$store.subscribeAction({
-      after: async (action) => {
+      after: async action => {
         switch (action.type) {
-          case "map/triggerUserLocate":
+          case 'map/triggerUserLocate':
             if (this.userLocation) {
               await this.userLocation.locate();
             }
             break;
         }
-      }
+      },
     });
   },
 
@@ -270,7 +373,7 @@ export default {
     if (this.userLocation) {
       this.userLocation.stopTracking();
     }
-  }
+  },
 };
 </script>
 
@@ -307,5 +410,9 @@ export default {
   width: 100%;
   height: 100%;
   z-index: 100;
+}
+
+.map-state-bar-overlay {
+  z-index: 1000;
 }
 </style>

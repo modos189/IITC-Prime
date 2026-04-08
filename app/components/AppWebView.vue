@@ -1,4 +1,4 @@
-// Copyright (C) 2021-2025 IITC-CE - GPL-3.0 with Store Exception - see LICENSE and COPYING.STORE
+// Copyright (C) 2021-2026 IITC-CE - GPL-3.0 with Store Exception - see LICENSE and COPYING.STORE
 
 <template>
   <BaseWebView
@@ -17,11 +17,13 @@
 </template>
 
 <script>
-import { injectBridgeIITC, router } from "@/utils/bridge";
-import { injectIITCPrimeResources } from "~/utils/iitc-prime-resources";
-import { injectDebugBridge } from "@/utils/debug-bridge";
+import { injectBridgeIITC, router } from '@/utils/bridge';
+import { injectCustomStyles, installFileChooserOverride } from '~/utils/iitc-prime-resources';
+import { injectDebugBridge } from '@/utils/debug-bridge';
 import BaseWebView from './BaseWebView.vue';
-import { INGRESS_INTEL_MAP, addViewportParam } from "@/utils/url-config";
+import { addViewportParam } from '@/utils/url-config';
+import { isIOS } from '@nativescript/core';
+
 import {
   changePortalHighlights,
   showLayer,
@@ -30,30 +32,35 @@ import {
   userLocationLocate,
   userLocationUpdate,
   userLocationOrientation,
-} from "@/utils/events-to-iitc";
+  setSafeAreaInsets,
+} from '@/utils/events-to-iitc';
 
 export default {
   name: 'AppWebView',
 
   components: {
-    BaseWebView
+    BaseWebView,
   },
 
   data() {
     return {
       store_unsubscribe: () => {},
-      started: false,
-    }
+      lastInjectedUrl: null, // Track last URL we injected bridge into
+      injectionInProgress: false, // Prevent concurrent injections
+    };
   },
 
   computed: {
     intelMapUrl() {
-      return addViewportParam(INGRESS_INTEL_MAP);
+      // Add viewport param to current URL
+      const currentUrl = this.$store.state.ui.currentUrl;
+      const finalUrl = addViewportParam(currentUrl);
+      return finalUrl;
     },
 
     webview() {
       return this.$refs.baseWebView?.webview;
-    }
+    },
   },
 
   methods: {
@@ -69,26 +76,66 @@ export default {
       console.error('WebView load error:', error);
     },
 
-    async onLoadStarted() {
-      this.started = true;
-      await this.$store.dispatch('ui/setWebviewLoadStatus', false);
+    async onLoadStarted(arg) {
+      // Ignore internal navigations (about:blank, file://) - they don't require webview reset
+      if (!arg?.url || arg.url === 'about:blank' || arg.url.startsWith('file://')) {
+        return;
+      }
+
+      // Reset lastInjectedUrl when starting new navigation
+      // This allows bridge re-injection on reload
+      if (arg.url.startsWith('https://intel.ingress.com')) {
+        this.lastInjectedUrl = null;
+      }
+
+      await this.$store.dispatch('ui/setWebviewLoaded', false);
     },
 
     async onLoadFinished(arg) {
-      // Only process Intel pages that have a corresponding onLoadStarted
-      if (this.started && arg.url && arg.url.includes('intel.ingress.com')) {
-        this.started = false;
+      // Only process Intel pages
+      if (!arg?.url || !arg.url.startsWith('https://intel.ingress.com')) {
+        return;
+      }
 
+      // Deduplication: check if we already processed this exact URL
+      if (this.lastInjectedUrl === arg.url) {
+        return;
+      }
+
+      // Prevent concurrent injections
+      if (this.injectionInProgress) {
+        return;
+      }
+
+      // Lock injection BEFORE any async operations
+      this.injectionInProgress = true;
+
+      try {
         // Inject bridges first
         await injectBridgeIITC(this.webview);
         await injectDebugBridge(this.webview);
 
+        // Mark this URL as processed
+        this.lastInjectedUrl = arg.url;
+
         // Then trigger plugin injection
-        await this.$store.dispatch('ui/setWebviewLoadStatus', true);
+        await this.$store.dispatch('ui/setWebviewLoaded', true);
+      } catch (error) {
+        console.error('[AppWebView] Bridge injection failed:', error);
+      } finally {
+        this.injectionInProgress = false;
       }
     },
 
     async onWebViewLoaded({ webview }) {
+      if (isIOS) {
+        // Prevent iOS from auto-shifting web content into safe area.
+        // 2 = UIScrollViewContentInsetAdjustmentBehavior.never
+        const nativeView = webview?.nativeViewProtected;
+        if (nativeView?.scrollView) {
+          nativeView.scrollView.contentInsetAdjustmentBehavior = 2;
+        }
+      }
       this.$emit('webview-loaded', { webview });
     },
 
@@ -110,20 +157,11 @@ export default {
       if (!this.webview || !plugin?.code) return;
 
       try {
-        await this.webview.executeJavaScript(`
-          try {
-            ${plugin.code}
-          } catch (e) {
-            window.lastError = e.toString();
-            console.error('injection error:', e);
-            throw e;
-          }
-        `);
+        await this.webview.executeJavaScript(plugin.code, false);
       } catch (error) {
         console.error('Plugin injection failed:', error);
       }
-    }
-
+    },
   },
 
   created() {
@@ -133,48 +171,75 @@ export default {
         if (!webview) return;
 
         switch (action.type) {
-          case "ui/reloadWebView":
+          case 'ui/reloadWebView':
             await this.$refs.baseWebView.reload();
             break;
-          case "ui/iitcBootFinished":
-            await injectIITCPrimeResources(webview);
+          case 'ui/iitcBootFinished': {
+            await installFileChooserOverride(webview);
+            await injectCustomStyles(webview);
+            // Set initial safe area insets after IITC loads
+            const wsa = this.$store.getters['ui/webviewSafeArea'];
+            await webview.executeJavaScript(
+              setSafeAreaInsets(wsa.top, wsa.bottom, wsa.left, wsa.right)
+            );
             break;
-          case "map/setInjectPlugin":
+          }
+          case 'map/setInjectPlugin':
             await this.injectPlugin(action.payload);
             break;
-          case "map/setActiveBaseLayer":
+          case 'map/executeJavaScript':
+            if (webview && action.payload) {
+              await webview.executeJavaScript(action.payload);
+            }
+            break;
+          case 'map/setActiveBaseLayer':
             await webview.executeJavaScript(showLayer(action.payload, true));
             break;
-          case "map/setOverlayLayerProperty":
+          case 'map/setOverlayLayerProperty': {
             const overlay_layer = state.map.overlayLayers[action.payload.index];
             await webview.executeJavaScript(showLayer(overlay_layer.layerId, overlay_layer.active));
             break;
-          case "map/setActiveHighlighter":
+          }
+          case 'map/setActiveHighlighter':
             await webview.executeJavaScript(changePortalHighlights(action.payload));
             break;
-          case "navigation/setCurrentPane":
+          case 'navigation/setCurrentPane':
             await webview.executeJavaScript(switchToPane(action.payload));
             break;
-          case "map/locateMapOnce":
-            await webview.executeJavaScript(setView(action.payload.lat, action.payload.lng, action.payload.persistentZoom));
+          case 'map/locateMapOnce':
+            await webview.executeJavaScript(
+              setView(action.payload.lat, action.payload.lng, action.payload.persistentZoom)
+            );
             break;
-          case "map/userLocationLocate":
+          case 'map/userLocationLocate': {
             const { lat, lng, accuracy, persistentZoom } = action.payload;
             await webview.executeJavaScript(userLocationLocate(lat, lng, accuracy, persistentZoom));
             break;
-          case "map/setLocation":
-            await webview.executeJavaScript(userLocationUpdate(action.payload.lat, action.payload.lng));
+          }
+          case 'map/setLocation':
+            await webview.executeJavaScript(
+              userLocationUpdate(action.payload.lat, action.payload.lng)
+            );
             break;
-          case "map/userLocationOrientation":
+          case 'map/userLocationOrientation':
             await webview.executeJavaScript(userLocationOrientation(action.payload.direction));
             break;
+          case 'ui/setKeyboardOpen':
+          case 'ui/setScreenSafeArea':
+          case 'ui/setLayoutDimensions': {
+            const wsa = this.$store.getters['ui/webviewSafeArea'];
+            await webview.executeJavaScript(
+              setSafeAreaInsets(wsa.top, wsa.bottom, wsa.left, wsa.right)
+            );
+            break;
+          }
         }
-      }
+      },
     });
   },
 
   beforeUnmount() {
     this.store_unsubscribe();
-  }
+  },
 };
 </script>

@@ -20,8 +20,9 @@ export const map = {
       isNeutral: true,
       title: 'No portal selected',
       health: 0,
-      resonators: [],
+      resonators: null,
       levelColor: null,
+      isLoading: false,
     },
     mapStatus: {
       portalLevels: {
@@ -84,8 +85,9 @@ export const map = {
           isNeutral: true,
           title: 'No portal selected',
           health: 0,
-          resonators: [],
+          resonators: null, // Reset to null for lazy initialization
           levelColor: null,
+          isLoading: false,
         };
       } else {
         // Update with data from IITC
@@ -193,7 +195,11 @@ export const map = {
     /**
      * Update user orientation in `user-location` plugin
      */
-    async userLocationOrientation({ commit }, { direction }) {}
+    async userLocationOrientation({ commit }, { direction }) {},
+    /**
+     * Execute JavaScript code in WebView
+     */
+    async executeJavaScript({ commit }, code) {}
   },
   getters: {
     isFollowingUser: state => state.isFollowingUser,

@@ -1,115 +1,175 @@
-// Copyright (C) 2025 IITC-CE - GPL-3.0 with Store Exception - see LICENSE and COPYING.STORE
+// Copyright (C) 2025-2026 IITC-CE - GPL-3.0 with Store Exception - see LICENSE and COPYING.STORE
 
 <template>
   <Page
+    actionBarHidden="true"
     @navigatedTo="onNavigatedTo"
     @navigatedFrom="onNavigatedFrom"
+    androidOverflowEdge="dont-apply"
+    @androidOverflowInset="onAndroidInset"
   >
-    <ActionBar :title="title" flat="true" class="action-bar">
-      <NavigationButton
-        @tap="goBack"
-        text="Back"
-        android.systemIcon="ic_menu_back"
-      />
-      <template v-if="$slots.headerRight && isIOS">
-        <slot name="headerRight" ios.position="right"></slot>
-      </template>
-      <template v-if="$slots.headerRight && isAndroid">
-        <slot name="headerRight" android.position="actionBar"></slot>
-      </template>
-    </ActionBar>
+    <GridLayout rows="auto, *" class="page-root">
+      <CustomActionBar
+        row="0"
+        :title="title"
+        :search="search"
+        :searchText="searchText"
+        :searchHint="searchHint"
+        :style="actionBarStyle"
+        @update:searchText="$emit('update:searchText', $event)"
+      >
+        <slot name="headerRight"></slot>
+      </CustomActionBar>
 
-    <!-- Content -->
-    <component
-      :is="useScroll === 'true' ? 'ScrollView' : 'StackLayout'"
-      :orientation="useScroll === 'true' ? 'vertical' : undefined"
-      class="settings-container"
-    >
-      <StackLayout class="settings-content">
-        <slot></slot>
-      </StackLayout>
-    </component>
+      <!-- Content -->
+      <component
+        row="1"
+        :is="useScroll === 'true' ? 'ScrollView' : 'StackLayout'"
+        :orientation="useScroll === 'true' ? 'vertical' : undefined"
+        class="settings-container"
+      >
+        <StackLayout :style="contentInsetStyle">
+          <slot :bottomPadding="contentBottomPadding"></slot>
+        </StackLayout>
+      </component>
+    </GridLayout>
   </Page>
 </template>
 
 <script>
-import { Frame, isIOS, isAndroid } from "@nativescript/core";
-import { attachBackHandler, detachBackHandler } from '@/utils/platform';
+import { Frame, isIOS, isAndroid } from '@nativescript/core';
+import { markRaw } from 'vue';
+import {
+  attachBackHandler,
+  detachBackHandler,
+  parseAndroidInsets,
+  getStatusBarHeight,
+  getNavigationBarHeight,
+} from '@/utils/platform';
+import CustomActionBar from './components/CustomActionBar';
 
 export default {
   name: 'SettingsBase',
 
+  components: {
+    CustomActionBar: markRaw(CustomActionBar),
+  },
+
   props: {
     title: {
       type: String,
-      required: true
+      default: '',
     },
     useScroll: {
       type: String,
       required: false,
-      default: "true",
-    }
+      default: 'true',
+    },
+    search: {
+      type: Boolean,
+      default: false,
+    },
+    searchText: {
+      type: String,
+      default: '',
+    },
+    searchHint: {
+      type: String,
+      default: 'Search...',
+    },
   },
+
+  emits: ['navigatedTo', 'navigatedFrom', 'update:searchText'],
 
   data() {
     return {
-      isIOS,
-      isAndroid
+      statusBarInset: 0,
+      navBarInset: 0,
+      leftInset: 0,
+      rightInset: 0,
     };
   },
 
-  methods: {
-    goBack() {
-      Frame.topmost().goBack();
+  computed: {
+    contentBottomPadding() {
+      return 24 + this.navBarInset; // $spacing-l + nav bar
     },
 
-    // Forward navigation event to parent component
+    actionBarStyle() {
+      return {
+        paddingTop: this.statusBarInset,
+        paddingLeft: this.leftInset,
+        paddingRight: this.rightInset,
+      };
+    },
+
+    contentInsetStyle() {
+      const base = 16; // $spacing-m
+      const style = {
+        paddingLeft: base + this.leftInset,
+        paddingRight: base + this.rightInset,
+      };
+      if (this.useScroll === 'true') {
+        style.paddingBottom = this.contentBottomPadding;
+      }
+      return style;
+    },
+  },
+
+  methods: {
+    onAndroidInset(args) {
+      if (!isAndroid || !args?.inset) return;
+      const insets = parseAndroidInsets(args.inset);
+
+      if (insets.top > 0) this.statusBarInset = insets.top;
+      this.navBarInset = insets.bottom;
+      this.leftInset = insets.left;
+      this.rightInset = insets.right;
+
+      args.inset.topConsumed = true;
+      args.inset.bottomConsumed = true;
+      args.inset.leftConsumed = true;
+      args.inset.rightConsumed = true;
+      args.inset.imeBottomConsumed = true;
+    },
+
     onNavigatedTo(event) {
-      // Attach back press handler when navigating TO this page
-      attachBackHandler(this.goBack);
+      attachBackHandler(() => Frame.topmost().goBack());
       this.$emit('navigatedTo', event);
     },
 
-    // Handle navigation away from this page
     onNavigatedFrom(event) {
-      // Detach back press handler when navigating FROM this page
       detachBackHandler();
       this.$emit('navigatedFrom', event);
+    },
+  },
+
+  created() {
+    if (isAndroid) {
+      this.statusBarInset = getStatusBarHeight();
+      this.navBarInset = getNavigationBarHeight();
+    } else if (isIOS) {
+      const window = UIApplication.sharedApplication?.keyWindow;
+      if (window) {
+        this.navBarInset = window.safeAreaInsets.bottom;
+      }
     }
   },
 
   beforeUnmount() {
     detachBackHandler();
-  }
+  },
 };
 </script>
 
 <style scoped lang="scss">
 @import '@/app';
 
-Page {
+.page-root {
   background-color: $surface;
-}
-
-.action-bar {
-  background-color: $primary;
-  color: white;
-}
-
-ActionItem {
-  color: white;
-}
-
-.action-bar ActionItem {
-  color: white;
 }
 
 .settings-container {
   background-color: $surface;
-}
-
-.settings-content {
-  padding-left: $spacing-m;
-  padding-right: $spacing-m;
 }
 </style>

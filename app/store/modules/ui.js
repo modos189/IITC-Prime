@@ -1,18 +1,21 @@
-// Copyright (C) 2024-2025 IITC-CE - GPL-3.0 with Store Exception - see LICENSE and COPYING.STORE
+// Copyright (C) 2024-2026 IITC-CE - GPL-3.0 with Store Exception - see LICENSE and COPYING.STORE
+
+import { INGRESS_INTEL_MAP } from '@/utils/url-config';
 
 export const ui = {
   namespaced: true,
   state: () => ({
     screenHeight: 0,
-    slidingPanelWidth: 100,
-    isWebviewLoadFinished: false,
+    panelWidth: 0,
+    availableWidth: 0,
+    isWebviewLoaded: false,
+    isIitcLoaded: false,
     progress: 0,
     isDebugActive: false,
+    currentUrl: INGRESS_INTEL_MAP,
 
     // Panel configuration
     mapStateBarHeight: 46,
-    panelVisibleHeight: 110,
-    panelHeight: 0,
 
     // Active panel in sliding panel (quick, search, layers)
     activePanel: 'quick',
@@ -20,44 +23,65 @@ export const ui = {
     // Panel state
     panelState: {
       isOpen: false,
-      position: 'BOTTOM',      // Current position ID ('TOP', 'MIDDLE', 'BOTTOM')
-      positionValue: 0,        // Actual numeric position value
-      positions: {             // Position values for all states
-        TOP: 50,
-        MIDDLE: 0,
-        BOTTOM: 0
-      },
-      snapThresholds: {        // Thresholds for snapping
-        middleToBottom: 0,
-        topToMiddle: 0
-      }
+      position: 'BOTTOM', // Current position name for compatibility
+      positionValue: 0, // Current position value for compatibility
     },
 
     // Panel command for programmatic control
     panelCommand: {
       action: '',
-      timestamp: 0
+      timestamp: 0,
     },
 
-    // Device orientation
-    isLandscapeOrientation: false
+    // Raw OS/screen safe area insets (status bar, nav bar, home indicator, notch) in DIPs.
+    // Used for native element positioning. WebView CSS vars use the webviewSafeArea getter.
+    screenSafeArea: { top: 0, bottom: 0, left: 0, right: 0 },
+
+    isKeyboardOpen: false,
   }),
+
+  getters: {
+    // WebView bottom padding: panel height when panel is on side (tablet landscape), else small gap above panel
+    webViewBottomInset: state => {
+      const PANEL_CLOSED_HEIGHT = 110;
+      const isPanelOnSide = state.panelWidth > 0 && state.panelWidth < state.availableWidth;
+      return isPanelOnSide ? PANEL_CLOSED_HEIGHT : 10;
+    },
+
+    // Computed WebView safe area insets: screen insets adjusted for panel layout.
+    // When keyboard is open, bottom is 0: WebView is already above keyboard, no panel to avoid.
+    webviewSafeArea: (state, getters) => ({
+      top: state.screenSafeArea.top,
+      bottom: state.isKeyboardOpen ? 0 : getters.webViewBottomInset,
+      left: state.screenSafeArea.left,
+      right: state.screenSafeArea.right,
+    }),
+  },
 
   mutations: {
     SET_SCREEN_HEIGHT(state, height) {
       state.screenHeight = height;
     },
-    SET_SLIDING_PANEL_WIDTH(state, width) {
-      state.slidingPanelWidth = width;
+    SET_PANEL_WIDTH(state, width) {
+      state.panelWidth = width;
     },
-    SET_WEBVIEW_LOAD_STATUS(state, status) {
-      state.isWebviewLoadFinished = status;
+    SET_AVAILABLE_WIDTH(state, width) {
+      state.availableWidth = width;
+    },
+    SET_WEBVIEW_LOADED(state, status) {
+      state.isWebviewLoaded = status;
+    },
+    SET_IITC_LOADED(state, status) {
+      state.isIitcLoaded = status;
     },
     SET_PROGRESS(state, progress) {
       state.progress = progress;
     },
     SET_DEBUG_MODE(state, isActive) {
       state.isDebugActive = isActive;
+    },
+    SET_CURRENT_URL(state, url) {
+      state.currentUrl = url;
     },
 
     // Set active panel in sliding panel with validation
@@ -70,15 +94,8 @@ export const ui = {
     SEND_PANEL_COMMAND(state, action) {
       state.panelCommand = {
         action,
-        timestamp: Date.now()
+        timestamp: Date.now(),
       };
-    },
-
-    // Update panel configuration
-    UPDATE_PANEL_CONFIG(state, { key, value }) {
-      if (key in state) {
-        state[key] = value;
-      }
     },
 
     // Update panel state - single property
@@ -88,31 +105,32 @@ export const ui = {
       }
     },
 
-    // Update panel state - positions object
-    UPDATE_PANEL_POSITIONS(state, positions) {
-      state.panelState.positions = { ...state.panelState.positions, ...positions };
+    SET_KEYBOARD_OPEN(state, isOpen) {
+      state.isKeyboardOpen = isOpen;
     },
 
-    // Update panel state - thresholds object
-    UPDATE_PANEL_THRESHOLDS(state, thresholds) {
-      state.panelState.snapThresholds = { ...state.panelState.snapThresholds, ...thresholds };
+    SET_SCREEN_SAFE_AREA(state, { top, bottom, left, right } = {}) {
+      if (top !== undefined) state.screenSafeArea.top = top;
+      if (bottom !== undefined) state.screenSafeArea.bottom = bottom;
+      if (left !== undefined) state.screenSafeArea.left = left;
+      if (right !== undefined) state.screenSafeArea.right = right;
     },
-
-    // Set landscape orientation
-    SET_LANDSCAPE_ORIENTATION(state, isLandscape) {
-      state.isLandscapeOrientation = isLandscape;
-    }
   },
 
   actions: {
-    setScreenHeight({ commit }, height) {
-      commit('SET_SCREEN_HEIGHT', height);
+    setLayoutDimensions({ commit }, { contentHeight, panelWidth, availableWidth }) {
+      commit('SET_SCREEN_HEIGHT', contentHeight);
+      commit('SET_PANEL_WIDTH', panelWidth);
+      commit('SET_AVAILABLE_WIDTH', availableWidth);
     },
-    setSlidingPanelWidth({ commit }, width) {
-      commit('SET_SLIDING_PANEL_WIDTH', width);
-    },
-    async setWebviewLoadStatus({ commit, dispatch }, status) {
-      commit('SET_WEBVIEW_LOAD_STATUS', status);
+    async setWebviewLoaded({ commit, dispatch }, status) {
+      commit('SET_WEBVIEW_LOADED', status);
+      // Reset IITC load status, portal status and map status when webview reloads
+      if (!status) {
+        dispatch('setIitcLoaded', false);
+        await dispatch('map/setPortalStatus', null, { root: true });
+        await dispatch('map/setMapStatus', null, { root: true });
+      }
       if (status) {
         await dispatch('manager/inject', null, { root: true });
       }
@@ -121,24 +139,22 @@ export const ui = {
       commit('SET_PROGRESS', progress);
     },
     reloadWebView() {},
-    iitcBootFinished() {},
+    setIitcLoaded({ commit }, status) {
+      commit('SET_IITC_LOADED', status);
+    },
+    iitcBootFinished({ dispatch }) {
+      dispatch('setIitcLoaded', true);
+    },
     toggleDebugMode({ commit, state }) {
       commit('SET_DEBUG_MODE', !state.isDebugActive);
     },
-
-    // Panel configuration actions
-    updatePanelConfig({ commit }, payload) {
-      commit('UPDATE_PANEL_CONFIG', payload);
+    setCurrentUrl({ commit }, url) {
+      commit('SET_CURRENT_URL', url);
     },
 
     // Set active panel
     setActivePanel({ commit }, panelName) {
       commit('SET_ACTIVE_PANEL', panelName);
-    },
-
-    // Panel state actions
-    updatePanelState({ commit }, { key, value }) {
-      commit('UPDATE_PANEL_STATE', { key, value });
     },
 
     // Set panel open state
@@ -152,58 +168,6 @@ export const ui = {
 
       if (value !== undefined) {
         commit('UPDATE_PANEL_STATE', { key: 'positionValue', value });
-      }
-    },
-
-    // Update all position values
-    updatePanelPositions({ commit }, positions) {
-      commit('UPDATE_PANEL_POSITIONS', positions);
-    },
-
-    // Update snap thresholds
-    updatePanelThresholds({ commit }, thresholds) {
-      commit('UPDATE_PANEL_THRESHOLDS', thresholds);
-    },
-
-    // Set landscape orientation
-    setLandscapeOrientation({ commit }, isLandscape) {
-      commit('SET_LANDSCAPE_ORIENTATION', isLandscape);
-    },
-
-    // Recalculate all panel dimensions and positions based on screen size
-    recalculatePanelLayout({ commit, state, dispatch }) {
-      const { screenHeight, panelVisibleHeight } = state;
-
-      // Set panel height
-      const topPosition = 50; // Fixed
-      commit('UPDATE_PANEL_CONFIG', {
-        key: 'panelHeight',
-        value: screenHeight - topPosition
-      });
-
-      // Calculate position values
-      const positions = {
-        BOTTOM: screenHeight - panelVisibleHeight,
-        MIDDLE: screenHeight / 2,
-        TOP: topPosition
-      };
-
-      // Calculate snap thresholds
-      const snapThresholds = {
-        middleToBottom: (positions.BOTTOM - positions.MIDDLE) / 5,
-        topToMiddle: (positions.MIDDLE - positions.TOP) / 5
-      };
-
-      // Update state
-      dispatch('updatePanelPositions', positions);
-      dispatch('updatePanelThresholds', snapThresholds);
-
-      // Keep panel position in sync if panel is at bottom
-      if (state.panelState.position === 'BOTTOM') {
-        dispatch('setPanelPosition', {
-          position: 'BOTTOM',
-          value: positions.BOTTOM
-        });
       }
     },
 
@@ -232,26 +196,15 @@ export const ui = {
       dispatch('setPanelOpenState', false);
       commit('SET_ACTIVE_PANEL', 'quick');
       commit('SEND_PANEL_COMMAND', 'close');
-    }
+    },
+
+    setKeyboardOpen({ commit }, isOpen) {
+      commit('SET_KEYBOARD_OPEN', isOpen);
+    },
+
+    // Update raw OS/screen safe area insets; pass only the values you want to update
+    setScreenSafeArea({ commit }, insets) {
+      commit('SET_SCREEN_SAFE_AREA', insets);
+    },
   },
-
-  // Add getters for computed values
-  getters: {
-    // Get position value by position name
-    getPanelPositionValue: (state) => (positionName) => {
-      return state.panelState.positions[positionName] || 0;
-    },
-
-    // Get current panel position value
-    currentPanelPositionValue: (state) => {
-      return state.panelState.positionValue;
-    },
-
-    // Check if panel is closed (at bottom position)
-    isPanelClosed: (state) => {
-      const tolerance = 10;
-      const bottomValue = state.panelState.positions.BOTTOM;
-      return Math.abs(state.panelState.positionValue - bottomValue) < tolerance;
-    }
-  }
 };

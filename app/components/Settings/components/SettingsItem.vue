@@ -1,4 +1,4 @@
-// Copyright (C) 2025 IITC-CE - GPL-3.0 with Store Exception - see LICENSE and COPYING.STORE
+// Copyright (C) 2025-2026 IITC-CE - GPL-3.0 with Store Exception - see LICENSE and COPYING.STORE
 
 <template>
   <GridLayout
@@ -29,18 +29,23 @@
         once="true"
       />
 
-      <!-- Switch toggle -->
-      <MDSwitch
-        v-else-if="type === 'switch'"
-        :checked="value"
-        @checkedChange="onSwitchChange"
+      <!-- External link icon -->
+      <Label
+        v-else-if="type === 'link'"
+        class="fa settings-nav-icon"
+        :text="$filters.fonticon('fa-external-link-alt')"
+        once="true"
       />
+
+      <!-- Switch toggle -->
+      <MDSwitch v-else-if="type === 'switch'" :checked="value" @checkedChange="onSwitchChange" />
     </StackLayout>
   </GridLayout>
 </template>
 
 <script>
 import { $navigateTo } from 'nativescript-vue';
+import { Utils } from '@nativescript/core';
 
 export default {
   name: 'SettingsItem',
@@ -49,44 +54,50 @@ export default {
     // Basic props
     title: {
       type: String,
-      required: true
+      required: true,
     },
     description: {
       type: String,
-      default: null
+      default: null,
     },
     // Type of item: 'nav', 'switch', 'action', 'value'
     type: {
       type: String,
       required: true,
-      validator: value => ['nav', 'switch', 'action', 'value'].includes(value)
+      validator: value => ['nav', 'switch', 'action', 'value', 'link'].includes(value),
     },
 
     // Switch-specific props
     value: {
       type: Boolean,
-      default: false
+      default: false,
     },
 
     // Navigation-specific props
     targetScreen: {
       type: Object,
-      default: null
+      default: null,
     },
     navProps: {
       type: Object,
-      default: () => ({})
+      default: () => ({}),
+    },
+
+    // Link-specific props
+    url: {
+      type: String,
+      default: null,
     },
 
     // Position props
     isFirst: {
       type: Boolean,
-      default: false
+      default: false,
     },
     isLast: {
       type: Boolean,
-      default: false
-    }
+      default: false,
+    },
   },
 
   methods: {
@@ -98,19 +109,21 @@ export default {
           animated: true,
           transition: {
             name: 'slideLeft',
-            duration: 300
-          }
+            duration: 300,
+          },
         });
+      } else if (this.type === 'link' && this.url) {
+        Utils.openUrl(this.url);
       } else if (this.type === 'action') {
-        // Emit tap event for custom handling
-        this.$emit('tap');
+        // Emit custom action event
+        this.$emit('action');
       }
     },
 
     onSwitchChange(args) {
       this.$emit('change', args.value);
-    }
-  }
+    },
+  },
 };
 </script>
 

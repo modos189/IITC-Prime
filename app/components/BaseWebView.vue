@@ -1,4 +1,4 @@
-// Copyright (C) 2024-2025 IITC-CE - GPL-3.0 with Store Exception - see LICENSE and COPYING.STORE
+// Copyright (C) 2024-2026 IITC-CE - GPL-3.0 with Store Exception - see LICENSE and COPYING.STORE
 
 <template>
   <AWebView
@@ -11,13 +11,14 @@
     @loadFinished="onLoadFinished"
     @loadError="onLoadError"
     @shouldOverrideUrlLoading="onShouldOverrideUrlLoading"
+    @titleChanged="onTitleChanged"
   />
 </template>
 
 <script>
 import { AWebView } from '@nativescript-community/ui-webview';
-import { isAndroid } from "@nativescript/core";
-import { applyWebViewSettings } from "@/utils/webview/webview-settings";
+import { isAndroid } from '@nativescript/core';
+import { applyWebViewSettings } from '@/utils/webview/webview-settings';
 import { BaseWebChromeClient } from '@/utils/webview/base-chrome-client';
 import { performanceOptimizationMixin } from '~/utils/performance-optimization';
 import { mapState } from 'vuex';
@@ -30,41 +31,53 @@ export default {
   props: {
     src: {
       type: String,
-      default: ''
+      default: '',
     },
     viewPortSize: {
       type: String,
-      default: 'width=device-width, initial-scale=1.0'
+      default: 'width=device-width, initial-scale=1.0',
     },
     debugMode: {
       type: Boolean,
-      default: true
+      default: true,
     },
     checkUrls: {
       type: Boolean,
-      default: false
-    }
+      default: false,
+    },
   },
 
   data() {
     return {
       webViewInstance: null,
       chromeClient: null,
+
       _webViewRef: null,
       isLoading: false,
       hasError: false,
-      errorDetails: null
-    }
+      errorDetails: null,
+    };
   },
 
   computed: {
     ...mapState({
-      internalHostnames: state => state.map.internalHostnames
+      internalHostnames: state => state.map.internalHostnames,
+      fakeUserAgent: state => state.settings.fakeUserAgent,
     }),
 
     webview() {
       return this.webViewInstance;
-    }
+    },
+  },
+
+  watch: {
+    fakeUserAgent(newValue) {
+      // Reapply WebView settings and reload when fake user agent setting changes
+      if (this.webViewInstance) {
+        applyWebViewSettings(this.webViewInstance, newValue);
+        this.webViewInstance.reload();
+      }
+    },
   },
 
   methods: {
@@ -72,17 +85,17 @@ export default {
     createWebChromeClient() {
       const client = new BaseWebChromeClient();
       client.initWithComponent({
-        setProgress: (progress) => {
+        setProgress: progress => {
           this.$emit('progress', progress);
         },
-        setPageTitle: (title) => {
-          this.$emit('title-changed', title);
-        },
-        showPopup: (resultMsg) => {
-          this.$emit('show-popup', { transport: resultMsg });
+        showPopup: popupData => {
+          this.$emit('show-popup', popupData);
         },
         closePopup: () => {
           this.$emit('close-popup');
+        },
+        onConsoleMessage: logData => {
+          this.$emit('console-log', logData);
         },
       });
       this.chromeClient = client;
@@ -110,22 +123,27 @@ export default {
 
       this.$emit('webview-loaded', {
         webview: this.webViewInstance,
-        args
+        args,
       });
     },
 
     setupWebView() {
       if (!this.webViewInstance) return;
 
-      applyWebViewSettings(this.webViewInstance);
+      applyWebViewSettings(this.webViewInstance, this.fakeUserAgent);
       this.setupWebChromeClient();
 
       // Setup console log event handlers
       this.setupDebugEventHandlers();
 
       // Setup JSBridge event handler
-      this.webViewInstance.on('JSBridge', (msg) => {
+      this.webViewInstance.on('JSBridge', msg => {
         this.$emit('bridge-message', msg.data);
+      });
+
+      // Setup GM API bridge event handler
+      this.webViewInstance.on('gmBridgeRequest', msg => {
+        this.$emit('bridge-message', ['gmBridgeRequest', msg.data]);
       });
     },
 
@@ -133,7 +151,7 @@ export default {
     setupDebugEventHandlers() {
       if (!this.webViewInstance) return;
 
-      this.webViewInstance.on('console:log', (event) => {
+      this.webViewInstance.on('console:log', event => {
         this.$emit('console-log', event.data);
       });
     },
@@ -156,7 +174,7 @@ export default {
       this.errorDetails = {
         code: args.code,
         message: args.message,
-        url: args.url
+        url: args.url,
       };
       this.$emit('load-error', this.errorDetails);
     },
@@ -172,12 +190,19 @@ export default {
       return args;
     },
 
+    onTitleChanged(args) {
+      this.$emit('page-title-changed', args.title);
+    },
+
     /**
      * Check if URL should be handled by the main WebView
      * URLs not allowed here will be opened in a popup WebView instead
      */
     isUrlAllowed(url) {
       if (!this.internalHostnames.length) return true;
+
+      // Allow internal/system URLs
+      if (url === 'about:blank' || url?.startsWith('file://')) return true;
 
       try {
         const uri = new URL(url);
@@ -196,7 +221,6 @@ export default {
       }
     },
 
-
     // Execute JavaScript command in webview
     executeCommand(command) {
       if (!this.webViewInstance || !command || command.trim() === '') {
@@ -210,7 +234,7 @@ export default {
     },
 
     reload() {
-      this.webViewInstance.loadUrl("about:blank");
+      this.webViewInstance.loadUrl('about:blank');
       this.webViewInstance.loadUrl(this.src);
     },
 
@@ -224,7 +248,16 @@ export default {
             this.chromeClient = null;
           }
 
-          const events = ['loaded', 'loadStarted', 'loadFinished', 'loadError', 'shouldOverrideUrlLoading', 'console:log', 'JSBridge'];
+          const events = [
+            'loaded',
+            'loadStarted',
+            'loadFinished',
+            'loadError',
+            'shouldOverrideUrlLoading',
+            'console:log',
+            'JSBridge',
+            'gmBridgeRequest',
+          ];
           events.forEach(event => {
             try {
               this.webViewInstance.removeEventListener(event);
@@ -241,14 +274,14 @@ export default {
               androidWebView.clearCache(true); // Clear cache
               androidWebView.clearFormData(); // Clear form data
               androidWebView.clearMatches(); // Clear search matches
-              androidWebView.loadUrl("about:blank"); // Clear all content
+              androidWebView.loadUrl('about:blank'); // Clear all content
 
               try {
                 androidWebView.setWebViewClient(null);
                 androidWebView.setWebChromeClient(null);
                 androidWebView.destroy(); // Destroy the WebView
               } catch (destroyError) {
-                console.error("Error during WebView destroy:", destroyError);
+                console.error('Error during WebView destroy:', destroyError);
               }
             }
           }
@@ -258,12 +291,11 @@ export default {
           this.isLoading = false;
           this.hasError = false;
           this.errorDetails = null;
-
         } catch (e) {
-          console.error("Error during WebView cleanup:", e);
+          console.error('Error during WebView cleanup:', e);
         }
       }
-    }
+    },
   },
 
   beforeUnmount() {
@@ -279,6 +311,6 @@ export default {
     } catch (error) {
       console.error('Error during BaseWebView cleanup:', error);
     }
-  }
-}
+  },
+};
 </script>
