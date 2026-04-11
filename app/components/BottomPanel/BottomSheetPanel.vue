@@ -7,6 +7,7 @@
     scrollViewId="panelScrollView"
     :gestureEnabled="gestureEnabled"
     backdropColor="rgba(0, 0, 0, 0.3)"
+    :translationFunction="backdropTranslationFunction"
     @loaded="$emit('bottomSheetReady', $event.object)"
   >
     <!-- Main content area (slot for WebView from parent) -->
@@ -213,6 +214,23 @@ export default {
       const bottomStep = this.PANEL_CLOSED_HEIGHT + this.navBarHeight;
 
       return [0, bottomStep, middlePosition, topPosition];
+    },
+
+    /**
+     * Keeps backdrop fully transparent at HIDDEN and BOTTOM steps,
+     * then fades in smoothly from BOTTOM to TOP.
+     */
+    backdropTranslationFunction() {
+      const bottomStep = this.steps[1];
+      const maxStep = this.steps[this.steps.length - 1];
+      return (value, max, progress) => {
+        const threshold = bottomStep / maxStep;
+        const opacity = progress <= threshold ? 0 : (progress - threshold) / (1 - threshold);
+        return {
+          bottomSheet: { translateY: value },
+          backDrop: { opacity },
+        };
+      };
     },
 
     /**
